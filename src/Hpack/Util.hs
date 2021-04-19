@@ -26,7 +26,6 @@ import           Data.Aeson.Types
 import           Data.Char
 import           Data.Data
 import           Data.List.Compat hiding (sort)
-import           Data.Ord
 import           System.Directory
 import           System.FilePath
 import qualified System.FilePath.Posix as Posix
@@ -35,7 +34,7 @@ import           System.FilePath.Glob
 import           Hpack.Haskell
 
 sort :: [String] -> [String]
-sort = sortBy (comparing lexicographically)
+sort = sortOn lexicographically
 
 lexicographically :: String -> (String, String)
 lexicographically x = (map toLower x, x)
@@ -103,7 +102,7 @@ toPosixFilePath = Posix.joinPath . splitDirectories
 
 expandGlobs :: FilePath -> [String] -> IO ([String], [FilePath])
 expandGlobs dir patterns = do
-  files <- (fst <$> globDir compiledPatterns dir) >>= mapM removeDirectories
+  files <- globDir compiledPatterns dir >>= mapM removeDirectories
   let warnings = [warn pattern | ([], pattern) <- zip files patterns]
   return (warnings, combineResults files)
   where

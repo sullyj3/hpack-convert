@@ -15,11 +15,14 @@ import qualified Distribution.Compiler                 as Compiler
 import qualified Distribution.InstalledPackageInfo     as Cabal
 import qualified Distribution.Package                  as Cabal
 import qualified Distribution.PackageDescription       as Cabal
-import qualified Distribution.PackageDescription.Parse as Cabal
+import qualified Distribution.PackageDescription.Parsec as Cabal
+import qualified Distribution.Parsec.Error             as Cabal
 import qualified Distribution.Text                     as Cabal
 import qualified Distribution.Version                  as Cabal
 import           Hpack.Config                          hiding (package)
 import           Text.PrettyPrint                      (fsep, (<+>))
+import qualified Data.ByteString                       as BS
+import           Data.ByteString                       (ByteString)
 
 -- * Public API
 
@@ -40,16 +43,16 @@ fromPackageDescription Cabal.GenericPackageDescription{..} =
             , packageAuthor = maybe [] parseCommaSep (nullNothing author)
             , packageMaintainer = maybe [] parseCommaSep (nullNothing maintainer)
             , packageCopyright = maybe [] parseCommaSep (nullNothing copyright)
-            , packageLicense = Just (show (Cabal.disp license))
+            , packageLicense = Just (show (Cabal.display license))
             , packageLicenseFile = listToMaybe licenseFiles
             , packageTestedWith =
                     map toUpper .
                     show .
-                    fsep . map (\(f, vr) -> Cabal.disp f <> Cabal.disp vr ) <$>
+                    fsep . map (\(f, vr) -> Cabal.display f <> Cabal.display vr ) <$>
                     nullNothing testedWith
             , packageFlags =
                     map (\Cabal.MkFlag{..} ->
-                             let Cabal.FlagName fn = flagName
+                             let fn = Cabal.unFlagName flagName
                              in Flag { flagName = fn
                                      , flagDescription =
                                              nullNothing flagDescription
@@ -67,11 +70,13 @@ fromPackageDescription Cabal.GenericPackageDescription{..} =
             }
 
 -- | Reads a 'Package' from a @.cabal@ manifest string
-fromPackageDescriptionString :: String -> Either ConvertError Package
+fromPackageDescriptionString :: ByteString -> Either ConvertError Package
 fromPackageDescriptionString pkgStr =
-    case Cabal.parsePackageDescription pkgStr of
-        Cabal.ParseFailed e  -> Left (ConvertCabalParseError e)
-        Cabal.ParseOk _ gpkg -> Right (fromPackageDescription gpkg)
+    case runParseResult Cabal.parseGenericPackageDescription pkgStr of
+      -- TODO not really sure what to do with the warnings for now
+      (_pwarn, Left e) -> Left (ConvertCabalParseError e)
+      (_pwarn, Right gpkg) -> Right $ fromPackageDescription gpkg
+
 
 data ConvertError = ConvertCabalParseError Cabal.PError
   deriving(Show, Eq)
@@ -100,9 +105,9 @@ fromSourceRepos (_repo@Cabal.SourceRepo{..}:_more) =
 
 fromDependency :: Cabal.Dependency -> Dependency
 fromDependency (Cabal.Dependency pn vr) | vr == Cabal.anyVersion =
-    Dependency (show (Cabal.disp pn)) Nothing
+    Dependency (show (Cabal.display pn)) Nothing
 fromDependency (Cabal.Dependency pn vr) =
-    Dependency (show (Cabal.disp pn <+> Cabal.disp vr)) Nothing
+    Dependency (show (Cabal.display pn <+> Cabal.display vr)) Nothing
 
 fromCondLibrary :: Maybe (Cabal.CondTree Cabal.ConfVar [Cabal.Dependency] Cabal.Library) -> Maybe (Section Library)
 fromCondLibrary mcondLibrary = do
@@ -179,10 +184,10 @@ fromCondComponentHasBuildInfo (cond, ifTree, elseTree) =
 
 fromCondition :: Cabal.Condition Cabal.ConfVar -> String
 fromCondition (Cabal.Var c) = case c of
-    Cabal.OS os -> "os(" ++ show (Cabal.disp os) ++ ")"
-    Cabal.Flag (Cabal.FlagName fl) -> "flag(" ++ fl ++ ")"
-    Cabal.Arch ar -> "arch(" ++ show (Cabal.disp ar) ++ ")"
-    Cabal.Impl cc vr -> "impl(" ++ show (Cabal.disp cc <+> Cabal.disp vr)  ++ ")"
+    Cabal.OS os -> "os(" ++ show (Cabal.display os) ++ ")"
+    Cabal.Flag fl -> "flag(" ++ unFlagName fl ++ ")"
+    Cabal.Arch ar -> "arch(" ++ show (Cabal.display ar) ++ ")"
+    Cabal.Impl cc vr -> "impl(" ++ show (Cabal.display cc <+> Cabal.display vr)  ++ ")"
 fromCondition (Cabal.CNot c) = "!(" ++ fromCondition c ++ ")"
 fromCondition (Cabal.COr c1 c2) = "(" ++ fromCondition c1 ++ ") || (" ++ fromCondition c2 ++ ")"
 fromCondition (Cabal.CAnd c1 c2) = "(" ++ fromCondition c1 ++ ") && (" ++ fromCondition c2 ++ ")"
@@ -197,9 +202,9 @@ sectionWithBuildInfo d Cabal.BuildInfo{..} =
     Section { sectionData = d
             , sectionSourceDirs = processDirs hsSourceDirs
             , sectionDependencies = map fromDependency targetBuildDepends
-            , sectionDefaultExtensions = map (show . Cabal.disp)
+            , sectionDefaultExtensions = map (show . Cabal.display)
                                              defaultExtensions
-            , sectionOtherExtensions = map (show . Cabal.disp) otherExtensions
+            , sectionOtherExtensions = map (show . Cabal.display) otherExtensions
             , sectionGhcOptions = map (\l -> case words l of
                                               []  -> ""
                                               [x] -> x
@@ -227,10 +232,10 @@ libFromCondLibrary :: Cabal.CondTree Cabal.ConfVar [Cabal.Dependency] Cabal.Libr
 libFromCondLibrary (Cabal.CondNode (Cabal.Library{..}) _ _) = do
     let Cabal.BuildInfo{..} = libBuildInfo
     return Library { libraryExposed = Just libExposed
-                   , libraryExposedModules = map (show . Cabal.disp)
+                   , libraryExposedModules = map (show . Cabal.display)
                                                  exposedModules
-                   , libraryOtherModules = map (show . Cabal.disp) otherModules
-                   , libraryReexportedModules = map (show . Cabal.disp)
+                   , libraryOtherModules = map (show . Cabal.display) otherModules
+                   , libraryReexportedModules = map (show . Cabal.display)
                                                     reexportedModules
                    }
 
@@ -238,7 +243,7 @@ exeFromCondExecutableTup :: (String, Cabal.CondTree Cabal.ConfVar [Cabal.Depende
 exeFromCondExecutableTup (name, Cabal.CondNode Cabal.Executable{..} _ _) =
     Executable { executableName = name
                , executableMain = modulePath
-               , executableOtherModules = map (show . Cabal.disp)
+               , executableOtherModules = map (show . Cabal.display)
                                               (Cabal.otherModules buildInfo)
                }
 
@@ -248,7 +253,7 @@ testExeFromCondExecutableTup (name, Cabal.CondNode Cabal.TestSuite{..} _ _) =
         Cabal.TestSuiteExeV10 _ mainIs -> Just
             Executable { executableName = name
                        , executableMain = mainIs
-                       , executableOtherModules = map (show . Cabal.disp)
+                       , executableOtherModules = map (show . Cabal.display)
                                                   (Cabal.otherModules testBuildInfo)
                        }
         _ -> Nothing
@@ -259,7 +264,7 @@ benchExeFromCondExecutableTup (name, Cabal.CondNode Cabal.Benchmark{..} _ _) =
         Cabal.BenchmarkExeV10 _ mainIs -> Just
             Executable { executableName = name
                        , executableMain = mainIs
-                       , executableOtherModules = map (show . Cabal.disp)
+                       , executableOtherModules = map (show . Cabal.display)
                                                   (Cabal.otherModules benchmarkBuildInfo)
                        }
         _ -> Nothing
